@@ -1,0 +1,582 @@
+{
+  "name": "CRM Data Hygiene Sentinel",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## CRM Data Hygiene Sentinel\n\n1. Select credentials on every node that shows a warning.\n2. Ships in DRY-RUN (SENTINEL_DRY_RUN=true). Set to false to write to the CRM.\n3. Requires N8N_BLOCK_ENV_ACCESS_IN_NODE=false to read settings from env, otherwise defaults are used.\n4. Logic in 'Sanitize & Score' mirrors src/data-sanitizer.js.\n\nSee README.md for setup.",
+        "height": 240,
+        "width": 460
+      },
+      "id": "a0000001-0000-4000-8000-000000000001",
+      "name": "Read Me",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "crm-hygiene-sentinel",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a0000001-0000-4000-8000-000000000002",
+      "name": "Webhook: CRM Record Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "7c1e6c52-5b0a-4f6e-9a55-1f2d3c4b5a69",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Sentinel Webhook Secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const out = [];\nfor (const item of $input.all()) {\n  const body = item.json.body !== undefined ? item.json.body : item.json;\n  let list = [];\n  if (Array.isArray(body)) list = body;\n  else if (body && Array.isArray(body.records)) list = body.records;\n  else if (body && Array.isArray(body.contacts)) list = body.contacts;\n  else if (body && typeof body === 'object') list = [body];\n  for (const rec of list) {\n    if (!rec || typeof rec !== 'object') continue;\n    const flat = Object.assign({}, rec);\n    if (rec.properties && typeof rec.properties === 'object') {\n      for (const k of Object.keys(rec.properties)) {\n        const v = rec.properties[k];\n        flat[k] = v && typeof v === 'object' && 'value' in v ? v.value : v;\n      }\n    }\n    out.push({ json: { source: 'webhook', record: flat } });\n  }\n}\nreturn out;"
+      },
+      "id": "a0000001-0000-4000-8000-000000000003",
+      "name": "Extract Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "a0000001-0000-4000-8000-000000000004",
+      "name": "Schedule: Hygiene Sweep",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "let hours = 24;\ntry { const v = Number($env.SENTINEL_SWEEP_LOOKBACK_HOURS); if (v > 0) hours = v; } catch (e) {}\nreturn [{ json: { sinceMs: Date.now() - hours * 3600 * 1000, lookbackHours: hours } }];"
+      },
+      "id": "a0000001-0000-4000-8000-000000000005",
+      "name": "Sweep Window",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filterGroups: [{ filters: [{ propertyName: 'createdate', operator: 'GTE', value: String($json.sinceMs) }] }], properties: ['email','firstname','lastname','phone','company','website'], sorts: [{ propertyName: 'createdate', direction: 'DESCENDING' }], limit: 100 }) }}",
+        "options": {}
+      },
+      "id": "a0000001-0000-4000-8000-000000000006",
+      "name": "HubSpot: Fetch Recent Contacts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "HubSpot Private App Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const out = [];\nfor (const item of $input.all()) {\n  for (const row of (item.json.results || [])) {\n    out.push({ json: { source: 'sweep', hubspotId: row.id, record: row.properties || {} } });\n  }\n}\nreturn out;"
+      },
+      "id": "a0000001-0000-4000-8000-000000000007",
+      "name": "Prepare Sweep Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const PERSONAL_DOMAINS = new Set(['gmail.com','googlemail.com','yahoo.com','yahoo.co.uk','yahoo.co.in','ymail.com','rocketmail.com','outlook.com','hotmail.com','hotmail.co.uk','live.com','msn.com','aol.com','icloud.com','me.com','mac.com','proton.me','protonmail.com','pm.me','gmx.com','gmx.net','gmx.de','mail.com','zoho.com','yandex.com','yandex.ru','mail.ru','qq.com','163.com','126.com','fastmail.com','hey.com','tutanota.com','tuta.io','comcast.net','verizon.net','att.net','sbcglobal.net','btinternet.com','rediffmail.com','web.de','orange.fr','free.fr','libero.it']);\nconst PERSONAL_PREFIXES = ['gmail.', 'yahoo.', 'hotmail.', 'outlook.'];\nconst NON_CORPORATE_SITES = new Set(['linkedin.com','facebook.com','instagram.com','twitter.com','x.com','tiktok.com','youtube.com','linktr.ee']);\nconst DIAL_CODES = { US:'1', CA:'1', GB:'44', IE:'353', DE:'49', FR:'33', ES:'34', IT:'39', NL:'31', BE:'32', CH:'41', SE:'46', NO:'47', DK:'45', PL:'48', AU:'61', NZ:'64', SG:'65', IN:'91', BD:'880', PK:'92', AE:'971', SA:'966', ZA:'27', NG:'234', BR:'55', MX:'52', AR:'54', JP:'81', KR:'82', CN:'86', PH:'63', ID:'62' };\nconst LEGAL_SUFFIXES = new Map([['llc','LLC'],['llp','LLP'],['lp','LP'],['pllc','PLLC'],['inc','Inc.'],['incorporated','Inc.'],['corp','Corp.'],['corporation','Corp.'],['ltd','Ltd.'],['limited','Ltd.'],['plc','PLC'],['gmbh','GmbH'],['pty','Pty'],['co','Co.']]);\nconst KEEP_UPPER = new Set(['llc','llp','lp','pllc','plc','usa','uk','ai','hr','seo','crm','saas','b2b','b2c','erp','api','ibm','hp','bmw']);\nconst SMALL_WORDS = new Set(['a','an','and','as','at','but','by','for','in','of','on','or','the','to','de','la','von','van','du','da']);\nconst JUNK = new Set(['n/a','na','none','null','undefined','unknown','tbd','-','.']);\nconst EMAIL_RE = /^[^@ ]+@[^@ ]+[.][^@ ]{2,}$/;\nconst DOMAIN_RE = /^[a-z0-9-]+([.][a-z0-9-]+)+$/;\nconst APOS = String.fromCharCode(39);\nconst BSLASH = String.fromCharCode(92);\nconst ALIASES = {\n  firstname: ['firstname','givenname','fname'],\n  lastname: ['lastname','surname','familyname','lname'],\n  fullname: ['fullname','name','contactname'],\n  email: ['email','emailaddress','workemail','mail'],\n  phone: ['phone','phonenumber','mobilephone','mobile','telephone','tel','cell'],\n  company: ['company','companyname','organization','organisation','employer','account'],\n  website: ['website','companywebsite','url','domain','companydomain'],\n  country: ['country','countrycode']\n};\nconst DEFAULT_REQUIRED = ['email','firstname','lastname','company','phone'];\n\nfunction tidy(value) {\n  if (value === null || value === undefined || typeof value === 'object') return '';\n  const s = String(value).replace(/\\s+/g, ' ').trim();\n  return JUNK.has(s.toLowerCase()) ? '' : s;\n}\nfunction indexRecord(rec) {\n  const idx = Object.create(null);\n  for (const k of Object.keys(rec)) idx[k.toLowerCase().split('_').join('').split(' ').join('').split('-').join('')] = rec[k];\n  return idx;\n}\nfunction pick(idx, names) {\n  for (const n of names) { const v = tidy(idx[n]); if (v) return v; }\n  return '';\n}\nfunction titleCase(word) {\n  return word.split('-').map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join('-')\n    .replace(/^([a-z])'([a-z])/i, (m, a, b) => a.toUpperCase() + APOS + b.toUpperCase());\n}\nfunction isPersonalDomain(domain, extra) {\n  const d = tidy(domain).toLowerCase();\n  if (!d) return false;\n  if (PERSONAL_DOMAINS.has(d) || (extra || []).indexOf(d) !== -1) return true;\n  return d.split('.').length <= 3 && PERSONAL_PREFIXES.some((p) => d.startsWith(p));\n}\nfunction extractDomainFromUrl(raw) {\n  let s = tidy(raw).toLowerCase();\n  if (!s) return '';\n  s = s.replace(/^[a-z]+:[/][/]/, '');\n  s = s.split('/')[0].split('?')[0].split('#')[0];\n  if (s.indexOf('@') !== -1) s = s.split('@').pop();\n  s = s.split(':')[0];\n  if (s.startsWith('www.')) s = s.slice(4);\n  return DOMAIN_RE.test(s) ? s : '';\n}\nfunction normalizeEmail(raw) {\n  const input = tidy(raw);\n  let e = input.toLowerCase().replace(/^[<]+|[>]+$/g, '');\n  if (e.startsWith('mailto:')) e = e.slice(7);\n  const valid = e.length > 0 && e.length <= 254 && EMAIL_RE.test(e);\n  return { input, email: valid ? e : '', valid, domain: valid ? e.split('@')[1] : '' };\n}\nfunction deriveCorporateDomain(emailDomain, website, extra) {\n  const web = extractDomainFromUrl(website);\n  if (web && !isPersonalDomain(web, extra) && !NON_CORPORATE_SITES.has(web)) return { domain: web, source: 'website', website: web };\n  if (emailDomain && !isPersonalDomain(emailDomain, extra)) return { domain: emailDomain, source: 'email', website: '' };\n  return { domain: '', source: 'none', website: '' };\n}\nfunction normalizePhone(raw, defaultCountry) {\n  const out = { e164: '', valid: false, extension: '', reason: '' };\n  let s = tidy(raw);\n  if (!s) { out.reason = 'missing'; return out; }\n  const m = s.match(/(?:extension|ext[.]?|x|#)[ ]*([0-9]{1,6})$/i);\n  if (m) { out.extension = m[1]; s = s.slice(0, m.index); }\n  const hasPlus = s.trim().startsWith('+');\n  const digits = s.replace(/[^0-9]/g, '');\n  if (!digits) { out.reason = 'no_digits'; return out; }\n  const cc = DIAL_CODES[String(defaultCountry || 'US').toUpperCase()] || '1';\n  let full = digits;\n  if (!hasPlus) {\n    if (digits.startsWith('00')) full = digits.slice(2);\n    else if (cc === '1') {\n      if (digits.length === 10) full = '1' + digits;\n      else if (digits.length === 11 && digits[0] === '1') full = digits;\n      else { out.reason = 'invalid_length'; return out; }\n    } else if (!(digits.startsWith(cc) && digits.length >= cc.length + 9)) {\n      full = cc + digits.replace(/^0+/, '');\n    }\n  }\n  if (full[0] === '1') {\n    if (!/^1[2-9][0-9]{2}[2-9][0-9]{6}$/.test(full)) { out.reason = 'invalid_nanp'; return out; }\n  } else if (full.length < 8 || full.length > 15) { out.reason = 'invalid_length'; return out; }\n  out.e164 = '+' + full;\n  out.valid = true;\n  return out;\n}\nfunction cleanPersonName(raw) {\n  const s = tidy(raw);\n  if (!s) return '';\n  return s.split(' ').map((w) => {\n    const hasLower = w !== w.toUpperCase();\n    const hasUpper = w !== w.toLowerCase();\n    if (!hasLower && !hasUpper) return w;\n    if (hasLower && hasUpper && w !== titleCase(w)) return w;\n    return titleCase(w);\n  }).join(' ');\n}\nfunction caseCompanyWord(word, index) {\n  const core = word.replace(/[.]+$/, '');\n  const trail = word.slice(core.length);\n  const lower = core.toLowerCase();\n  if (index > 0 && LEGAL_SUFFIXES.has(lower)) return LEGAL_SUFFIXES.get(lower);\n  if (KEEP_UPPER.has(lower)) return core.toUpperCase() + trail;\n  if (index > 0 && SMALL_WORDS.has(lower)) return lower + trail;\n  const hasLower = core !== core.toUpperCase();\n  const hasUpper = core !== core.toLowerCase();\n  if (!hasLower && !hasUpper) return word;\n  if (hasUpper && !hasLower) return (core.length <= 3 ? core : titleCase(core)) + trail;\n  if (hasLower && hasUpper && core !== titleCase(core)) return word;\n  return titleCase(core) + trail;\n}\nfunction cleanCompanyName(raw) {\n  let s = tidy(raw).split(',').join('');\n  s = s.replace(/^[-;:|' ]+|[-;:|' ]+$/g, '');\n  if (!s) return '';\n  return s.split(' ').filter(Boolean).map((w, i) => caseCompanyWord(w, i)).join(' ');\n}\nfunction sanitizeRecord(input, options) {\n  const opts = Object.assign({ defaultCountry: 'US', requiredFields: DEFAULT_REQUIRED, extraPersonalDomains: [] }, options || {});\n  const idx = indexRecord(input && typeof input === 'object' ? input : {});\n  const get = (names) => pick(idx, names);\n  let first = get(ALIASES.firstname);\n  let last = get(ALIASES.lastname);\n  const full = get(ALIASES.fullname);\n  if (!first && !last && full) { const parts = full.split(' '); first = parts.shift(); last = parts.join(' '); }\n  const countryRaw = get(ALIASES.country).toUpperCase();\n  const country = Object.prototype.hasOwnProperty.call(DIAL_CODES, countryRaw) ? countryRaw : String(opts.defaultCountry).toUpperCase();\n  const emailInfo = normalizeEmail(get(ALIASES.email));\n  const phoneRaw = get(ALIASES.phone);\n  const phoneInfo = normalizePhone(phoneRaw, country);\n  const companyRaw = get(ALIASES.company);\n  const corp = deriveCorporateDomain(emailInfo.domain, get(ALIASES.website), opts.extraPersonalDomains);\n  const personalEmail = emailInfo.valid && isPersonalDomain(emailInfo.domain, opts.extraPersonalDomains);\n  const clean = {\n    firstname: cleanPersonName(first),\n    lastname: cleanPersonName(last),\n    email: emailInfo.email,\n    phone: phoneInfo.e164,\n    phone_extension: phoneInfo.extension,\n    company: cleanCompanyName(companyRaw),\n    website: corp.website,\n    company_domain: corp.domain,\n    domain_source: corp.source\n  };\n  const required = (opts.requiredFields || DEFAULT_REQUIRED).map((f) => String(f).toLowerCase());\n  const missing = required.filter((f) => !clean[f]);\n  const flags = missing.map((f) => 'MISSING_' + f.toUpperCase());\n  if (!emailInfo.input && missing.indexOf('email') === -1) flags.push('MISSING_EMAIL');\n  if (emailInfo.input && !emailInfo.valid) flags.push('INVALID_EMAIL');\n  if (phoneRaw && !phoneInfo.valid) flags.push('INVALID_PHONE');\n  if (personalEmail) flags.push('PERSONAL_EMAIL');\n  if (!clean.company_domain) flags.push('NO_CORPORATE_DOMAIN');\n  const status = !clean.email ? 'unidentifiable' : (missing.length ? 'incomplete' : 'complete');\n  const changes = [];\n  const track = (field, before, after) => { if (before && before !== after) changes.push({ field, from: before, to: after }); };\n  track('firstname', first, clean.firstname);\n  track('lastname', last, clean.lastname);\n  track('email', emailInfo.input, clean.email);\n  track('phone', phoneRaw, clean.phone);\n  track('company', companyRaw, clean.company);\n  const dedupeKeys = { hard: [], soft: [] };\n  if (clean.email) dedupeKeys.hard.push('email:' + clean.email);\n  if (clean.firstname && clean.lastname && (clean.company_domain || clean.company)) {\n    dedupeKeys.soft.push('person:' + [clean.firstname, clean.lastname, clean.company_domain || clean.company].join('|').toLowerCase());\n  }\n  const completeness = required.length ? Math.round(((required.length - missing.length) / required.length) * 100) : 100;\n  return { clean, flags, missing, completeness, status, personalEmail, dedupeKeys, changes };\n}\nfunction findDuplicates(results) {\n  const hard = new Map();\n  const soft = new Map();\n  return results.map((r, index) => {\n    let duplicateOf = null;\n    let possibleDuplicateOf = null;\n    for (const k of r.dedupeKeys.hard) { if (hard.has(k)) { duplicateOf = hard.get(k); break; } }\n    for (const k of r.dedupeKeys.soft) { if (soft.has(k)) { possibleDuplicateOf = soft.get(k); break; } }\n    const root = duplicateOf === null ? index : duplicateOf;\n    r.dedupeKeys.hard.forEach((k) => { if (!hard.has(k)) hard.set(k, root); });\n    r.dedupeKeys.soft.forEach((k) => { if (!soft.has(k)) soft.set(k, root); });\n    return { index, duplicateOf, possibleDuplicateOf };\n  });\n}\nfunction buildHubSpotProperties(clean, hygiene) {\n  const p = {};\n  const add = (k, v) => { if (v) p[k] = v; };\n  add('firstname', clean.firstname);\n  add('lastname', clean.lastname);\n  add('email', clean.email);\n  add('phone', clean.phone);\n  add('company', clean.company);\n  add('website', clean.website || clean.company_domain);\n  if (hygiene) { p.sentinel_status = hygiene.status; p.sentinel_flags = hygiene.flags.join(';'); p.sentinel_last_checked = hygiene.checkedOn; }\n  return p;\n}\nfunction buildHubSpotEmailSearch(email) {\n  if (!email) return null;\n  return { filterGroups: [{ filters: [{ propertyName: 'email', operator: 'EQ', value: email }] }], properties: ['email'], limit: 1 };\n}\nfunction buildSalesforceFields(clean, hygiene, forCreate) {\n  const f = {};\n  const add = (k, v) => { if (v) f[k] = v; };\n  add('FirstName', clean.firstname);\n  add('LastName', clean.lastname);\n  add('Email', clean.email);\n  add('Phone', clean.phone);\n  add('Company', clean.company);\n  add('Website', clean.website || clean.company_domain);\n  if (forCreate) { if (!f.LastName) f.LastName = '[Unknown]'; if (!f.Company) f.Company = '[Not Provided]'; }\n  if (hygiene) { f.Sentinel_Status__c = hygiene.status; f.Sentinel_Flags__c = hygiene.flags.join(';'); f.Sentinel_Last_Checked__c = hygiene.checkedOn; }\n  return f;\n}\nfunction escapeSoql(value) {\n  return String(value).split(BSLASH).join(BSLASH + BSLASH).split(APOS).join(BSLASH + APOS);\n}\nfunction buildEmailLookupSoql(email) {\n  return 'SELECT Id FROM Lead WHERE Email = ' + APOS + escapeSoql(email) + APOS + ' AND IsConverted = false LIMIT 1';\n}\n\nconst get = (k, d) => { try { const v = $env[k]; return v === undefined || v === '' ? d : String(v); } catch (e) { return d; } };\nconst list = (s) => String(s).split(',').map((x) => x.trim()).filter(Boolean);\nconst cfg = {\n  crm: get('SENTINEL_CRM_TARGET', 'hubspot').toLowerCase(),\n  country: get('SENTINEL_DEFAULT_COUNTRY', 'US').toUpperCase(),\n  dryRun: get('SENTINEL_DRY_RUN', 'true').toLowerCase() !== 'false',\n  hygieneProps: get('SENTINEL_WRITE_HYGIENE_PROPS', 'false').toLowerCase() === 'true',\n  extraPersonal: list(get('SENTINEL_EXTRA_PERSONAL_DOMAINS', '')).map((d) => d.toLowerCase()),\n  required: list(get('SENTINEL_REQUIRED_FIELDS', 'email,firstname,lastname,company,phone')),\n  sfInstance: get('SALESFORCE_INSTANCE_URL', '').replace(/[/]+$/, ''),\n  sfVersion: get('SALESFORCE_API_VERSION', 'v62.0'),\n  alertUrl: get('SENTINEL_ALERT_WEBHOOK_URL', '')\n};\nconst items = $input.all();\nconst results = items.map((it) => sanitizeRecord(it.json.record || {}, { defaultCountry: cfg.country, requiredFields: cfg.required, extraPersonalDomains: cfg.extraPersonal }));\nconst dups = findDuplicates(results);\nconst today = new Date().toISOString().slice(0, 10);\nreturn items.map((it, i) => {\n  const r = results[i];\n  const dup = dups[i].duplicateOf;\n  const possible = dups[i].possibleDuplicateOf;\n  const flags = r.flags.slice();\n  let route = 'sync';\n  if (dup !== null) { route = 'duplicate'; flags.push('DUPLICATE_IN_BATCH'); }\n  else if (r.status === 'unidentifiable') { route = 'quarantine'; }\n  else if (cfg.crm === 'salesforce' && !cfg.sfInstance) { route = 'quarantine'; flags.push('CONFIG_SALESFORCE_INSTANCE_URL_MISSING'); }\n  else if (cfg.dryRun) { route = 'dry_run'; }\n  if (possible !== null && dup === null) flags.push('POSSIBLE_DUPLICATE');\n  const hygiene = cfg.hygieneProps ? { status: r.status, flags: flags, checkedOn: today } : null;\n  return {\n    json: {\n      source: it.json.source,\n      route: route,\n      crm: cfg.crm,\n      status: r.status,\n      completeness: r.completeness,\n      flags: flags,\n      missing: r.missing,\n      changes: r.changes,\n      duplicateOf: dup,\n      possibleDuplicateOf: possible,\n      clean: r.clean,\n      alertText: 'CRM Hygiene Sentinel: ' + route + ' | ' + (r.clean.email || 'no email') + ' | ' + flags.join(', '),\n      alertWebhookUrl: cfg.alertUrl,\n      hubspot: { searchBody: buildHubSpotEmailSearch(r.clean.email), properties: buildHubSpotProperties(r.clean, hygiene) },\n      sf: {\n        instanceUrl: cfg.sfInstance,\n        apiVersion: cfg.sfVersion,\n        soql: r.clean.email ? buildEmailLookupSoql(r.clean.email) : '',\n        createFields: buildSalesforceFields(r.clean, hygiene, true),\n        updateFields: buildSalesforceFields(r.clean, hygiene, false)\n      }\n    },\n    pairedItem: { item: i }\n  };\n});"
+      },
+      "id": "a0000001-0000-4000-8000-000000000008",
+      "name": "Sanitize & Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 140]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b0000001-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "sync",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a0000001-0000-4000-8000-000000000009",
+      "name": "Route: Sync Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1220, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.alertWebhookUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.alertText }) }}",
+        "options": {}
+      },
+      "id": "a0000001-0000-4000-8000-000000000010",
+      "name": "Notify (optional, disabled)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1460, 320],
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b0000001-0000-4000-8000-000000000002",
+              "leftValue": "={{ $json.crm }}",
+              "rightValue": "hubspot",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a0000001-0000-4000-8000-000000000011",
+      "name": "Route: CRM Target",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1460, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.hubspot.searchBody) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "a0000001-0000-4000-8000-000000000012",
+      "name": "HubSpot: Find Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1700, -120],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "HubSpot Private App Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b0000001-0000-4000-8000-000000000003",
+              "leftValue": "={{ $json.total }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a0000001-0000-4000-8000-000000000013",
+      "name": "HubSpot: Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1940, -120]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $json.results[0].id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: $('Sanitize & Score').item.json.hubspot.properties }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "a0000001-0000-4000-8000-000000000014",
+      "name": "HubSpot: Update Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2180, -220],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "HubSpot Private App Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: $('Sanitize & Score').item.json.hubspot.properties }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "a0000001-0000-4000-8000-000000000015",
+      "name": "HubSpot: Create Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2180, -40],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "HubSpot Private App Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.sf.instanceUrl + '/services/data/' + $json.sf.apiVersion + '/query' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "salesforceOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $json.sf.soql }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "a0000001-0000-4000-8000-000000000016",
+      "name": "Salesforce: Find Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1700, 140],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "salesforceOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Salesforce OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b0000001-0000-4000-8000-000000000004",
+              "leftValue": "={{ $json.totalSize }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a0000001-0000-4000-8000-000000000017",
+      "name": "Salesforce: Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1940, 140]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Sanitize & Score').item.json.sf.instanceUrl + '/services/data/' + $('Sanitize & Score').item.json.sf.apiVersion + '/sobjects/Lead/' + $json.records[0].Id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "salesforceOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Sanitize & Score').item.json.sf.updateFields) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "a0000001-0000-4000-8000-000000000018",
+      "name": "Salesforce: Update Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2180, 60],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "salesforceOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Salesforce OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Sanitize & Score').item.json.sf.instanceUrl + '/services/data/' + $('Sanitize & Score').item.json.sf.apiVersion + '/sobjects/Lead' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "salesforceOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Sanitize & Score').item.json.sf.createFields) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "a0000001-0000-4000-8000-000000000019",
+      "name": "Salesforce: Create Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2180, 240],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "salesforceOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Salesforce OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const s = $('Sanitize & Score').item.json;\nconst ran = (n) => { try { return !!$(n).item; } catch (e) { return false; } };\nlet outcome = s.route;\nif ($json.error) outcome = 'crm_error';\nelse if (ran('HubSpot: Create Contact') || ran('Salesforce: Create Lead')) outcome = 'created';\nelse if (ran('HubSpot: Update Contact') || ran('Salesforce: Update Lead')) outcome = 'updated';\nconst err = $json.error ? (typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error)).slice(0, 500) : null;\nreturn { json: { email: s.clean.email, outcome: outcome, route: s.route, status: s.status, completeness: s.completeness, flags: s.flags, missing: s.missing, duplicateOf: s.duplicateOf, possibleDuplicateOf: s.possibleDuplicateOf, error: err, checkedAt: new Date().toISOString() } };"
+      },
+      "id": "a0000001-0000-4000-8000-000000000020",
+      "name": "Log Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 100]
+    }
+  ],
+  "connections": {
+    "Webhook: CRM Record Intake": {
+      "main": [[{ "node": "Extract Records", "type": "main", "index": 0 }]]
+    },
+    "Extract Records": {
+      "main": [[{ "node": "Sanitize & Score", "type": "main", "index": 0 }]]
+    },
+    "Schedule: Hygiene Sweep": {
+      "main": [[{ "node": "Sweep Window", "type": "main", "index": 0 }]]
+    },
+    "Sweep Window": {
+      "main": [[{ "node": "HubSpot: Fetch Recent Contacts", "type": "main", "index": 0 }]]
+    },
+    "HubSpot: Fetch Recent Contacts": {
+      "main": [[{ "node": "Prepare Sweep Records", "type": "main", "index": 0 }]]
+    },
+    "Prepare Sweep Records": {
+      "main": [[{ "node": "Sanitize & Score", "type": "main", "index": 0 }]]
+    },
+    "Sanitize & Score": {
+      "main": [[{ "node": "Route: Sync Allowed?", "type": "main", "index": 0 }]]
+    },
+    "Route: Sync Allowed?": {
+      "main": [
+        [{ "node": "Route: CRM Target", "type": "main", "index": 0 }],
+        [{ "node": "Notify (optional, disabled)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify (optional, disabled)": {
+      "main": [[{ "node": "Log Outcome", "type": "main", "index": 0 }]]
+    },
+    "Route: CRM Target": {
+      "main": [
+        [{ "node": "HubSpot: Find Contact", "type": "main", "index": 0 }],
+        [{ "node": "Salesforce: Find Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "HubSpot: Find Contact": {
+      "main": [
+        [{ "node": "HubSpot: Exists?", "type": "main", "index": 0 }],
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }]
+      ]
+    },
+    "HubSpot: Exists?": {
+      "main": [
+        [{ "node": "HubSpot: Update Contact", "type": "main", "index": 0 }],
+        [{ "node": "HubSpot: Create Contact", "type": "main", "index": 0 }]
+      ]
+    },
+    "HubSpot: Update Contact": {
+      "main": [
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }],
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }]
+      ]
+    },
+    "HubSpot: Create Contact": {
+      "main": [
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }],
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }]
+      ]
+    },
+    "Salesforce: Find Lead": {
+      "main": [
+        [{ "node": "Salesforce: Exists?", "type": "main", "index": 0 }],
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }]
+      ]
+    },
+    "Salesforce: Exists?": {
+      "main": [
+        [{ "node": "Salesforce: Update Lead", "type": "main", "index": 0 }],
+        [{ "node": "Salesforce: Create Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Salesforce: Update Lead": {
+      "main": [
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }],
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }]
+      ]
+    },
+    "Salesforce: Create Lead": {
+      "main": [
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }],
+        [{ "node": "Log Outcome", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
