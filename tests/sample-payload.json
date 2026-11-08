@@ -1,0 +1,76 @@
+{
+  "source": "website-form-test",
+  "records": [
+    {
+      "_expect": "complete; PERSONAL_EMAIL; +14155550132; company 'Acme Widgets LLC'; no corporate domain",
+      "first_name": "jane",
+      "last_name": "DOE",
+      "Email": "Jane.Doe@GMAIL.com",
+      "phone": "(415) 555-0132",
+      "company_name": "acme widgets llc",
+      "website": ""
+    },
+    {
+      "_expect": "complete; +14155550199 (ext 22 captured separately); 'Acme Widgets Inc.'; domain acme-widgets.com",
+      "firstName": "JOHN",
+      "lastName": "smith",
+      "email": "  John.Smith@Acme-Widgets.com  ",
+      "mobile": "415.555.0199 ext 22",
+      "company": "ACME  WIDGETS, INC"
+    },
+    {
+      "_expect": "route=duplicate (same email as record 1, different casing/format)",
+      "first_name": "Jane",
+      "last_name": "Doe",
+      "email": "jane.doe@gmail.com",
+      "phone": "+1 415 555 0132",
+      "company_name": "Acme Widgets LLC"
+    },
+    {
+      "_expect": "incomplete: MISSING_FIRSTNAME, MISSING_LASTNAME, MISSING_PHONE; 'Globex Corp.'; domain globex.example",
+      "email": "sales@globex.example",
+      "company": "globex corporation"
+    },
+    {
+      "_expect": "+442079460958 (country=GB); 'Hooli Ltd.'; name split from full_name",
+      "full_name": "priya  PATEL",
+      "email": "priya.patel@hooli.example",
+      "phone": "020 7946 0958",
+      "country": "GB",
+      "company": "hooli ltd"
+    },
+    {
+      "_expect": "+8801712345678 (country=BD); 'Dhaka Traders & Co.'",
+      "first_name": "rahim",
+      "last_name": "uddin",
+      "email": "rahim@dhaka-traders.example",
+      "phone": "01712-345678",
+      "country": "BD",
+      "company": "dhaka traders & co"
+    },
+    {
+      "_expect": "unidentifiable (no email) -> route=quarantine; MISSING_EMAIL",
+      "first_name": "sam",
+      "last_name": "nobody",
+      "phone": "4155550111",
+      "company": "initech"
+    },
+    {
+      "_expect": "unidentifiable -> quarantine; INVALID_EMAIL, INVALID_PHONE; company 'N/A' treated as empty",
+      "first_name": "alex",
+      "last_name": "lee",
+      "email": "not-an-email",
+      "phone": "123",
+      "company": "N/A"
+    },
+    {
+      "_expect": "complete; PERSONAL_EMAIL (yahoo) but corporate domain initech.com taken from website; last name O'Neil",
+      "first_name": "dana",
+      "last_name": "o'neil",
+      "email": "Dana.ONeil@Yahoo.com",
+      "phone": "1-415-555-0123",
+      "company": "initech",
+      "website": "https://www.Initech.com/about?utm=1"
+    }
+  ]
+}
