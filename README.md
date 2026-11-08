@@ -3,7 +3,7 @@
 
 <br>
 
-![CRM Data Hygiene Sentinel Workflow](assets/workflow-diagram.png)
+![CRM Data Hygiene Sentinel Architecture](assets/data-flow-architecture.png)
 
 <br>
 
