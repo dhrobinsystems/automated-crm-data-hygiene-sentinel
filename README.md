@@ -1,7 +1,13 @@
 # CRM Data Hygiene Sentinel
 > An event-driven **and** scheduled data hygiene workflow for [n8n](https://n8n.io) that cleans CRM records in real time, then syncs them to **HubSpot** or **Salesforce**.
+
+<br>
+
 ![CRM Data Hygiene Sentinel Workflow](assets/workflow-diagram.png)
-![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+
+<br>
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![n8n](https://img.shields.io/badge/built%20for-n8n-ff6d5a)
 ![Node](https://img.shields.io/badge/node-%3E%3D18-green)
 
